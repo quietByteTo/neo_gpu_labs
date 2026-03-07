@@ -1,5 +1,5 @@
 // ============================================================================
-// Verilator Testbench for alu_pipeline - Fixed Version
+// Verilator Testbench for alu_pipeline - Complete Version
 // ============================================================================
 
 #include <verilated.h>
@@ -25,7 +25,7 @@ vluint64_t sim_time = 0;
 #define OP_MAX  0x9
 
 #define TYPE_INT32 0x0
-
+#define TRACE
 // 构造指令
 uint32_t make_instr(uint8_t op, uint8_t dtype = TYPE_INT32) {
     return (0x0 << 28) | (op << 24) | (dtype << 20);
@@ -49,7 +49,6 @@ void posedge(Valu_pipeline* dut, VerilatedVcdC* trace) {
 
 // 正确设置1024bit向量（Verilator打包为32个32bit字）
 void set_src_a(Valu_pipeline* dut, uint32_t* data) {
-    // src_a是IData[32]（32位整数数组），共1024bit
     for (int i = 0; i < 32; i++) {
         dut->src_a[i] = data[i];
     }
@@ -279,8 +278,120 @@ int main(int argc, char** argv) {
     }
     printf("\n");
     
-    // ========== Test 5: Pipeline Back-to-Back ==========
-    printf("Test 5: Pipeline back-to-back (3 instructions)\n");
+    // ========== Test 5: AND ==========
+    printf("Test 5: AND (32 lanes)\n");
+    for (int i = 0; i < 32; i++) {
+        a[i] = 0xFF00FF00 | (i << 16);
+        b[i] = 0x0F0F0F0F;
+        expected[i] = a[i] & b[i];
+    }
+    send_instr(dut, m_trace, make_instr(OP_AND), a, b);
+    
+    if (wait_result(dut, m_trace, result)) {
+        print_lanes(result, "  Result");
+        if (check_lanes(result, expected, "AND")) passed++; else failed++;
+    } else {
+        printf("\033[31m[FAIL]\033[0m AND timeout\n");
+        failed++;
+    }
+    printf("\n");
+    
+    // ========== Test 6: OR ==========
+    printf("Test 6: OR (32 lanes)\n");
+    for (int i = 0; i < 32; i++) {
+        a[i] = 0xF0000000 | i;
+        b[i] = 0x0F000000 | i;
+        expected[i] = a[i] | b[i];
+    }
+    send_instr(dut, m_trace, make_instr(OP_OR), a, b);
+    
+    if (wait_result(dut, m_trace, result)) {
+        print_lanes(result, "  Result");
+        if (check_lanes(result, expected, "OR")) passed++; else failed++;
+    } else {
+        printf("\033[31m[FAIL]\033[0m OR timeout\n");
+        failed++;
+    }
+    printf("\n");
+    
+    // ========== Test 7: SHL ==========
+    printf("Test 7: SHL by 4 (32 lanes)\n");
+    for (int i = 0; i < 32; i++) {
+        a[i] = 0x0000000F + i;
+        b[i] = 4;
+        expected[i] = a[i] << 4;
+    }
+    send_instr(dut, m_trace, make_instr(OP_SHL), a, b);
+    
+    if (wait_result(dut, m_trace, result)) {
+        print_lanes(result, "  Result");
+        if (check_lanes(result, expected, "SHL")) passed++; else failed++;
+    } else {
+        printf("\033[31m[FAIL]\033[0m SHL timeout\n");
+        failed++;
+    }
+    printf("\n");
+    
+    // ========== Test 8: SHR ==========
+    printf("Test 8: SHR by 2 (32 lanes)\n");
+    for (int i = 0; i < 32; i++) {
+        a[i] = 0xFF000000 + (i << 20);
+        b[i] = 2;
+        expected[i] = a[i] >> 2;
+    }
+    send_instr(dut, m_trace, make_instr(OP_SHR), a, b);
+    
+    if (wait_result(dut, m_trace, result)) {
+        print_lanes(result, "  Result");
+        if (check_lanes(result, expected, "SHR")) passed++; else failed++;
+    } else {
+        printf("\033[31m[FAIL]\033[0m SHR timeout\n");
+        failed++;
+    }
+    printf("\n");
+    
+    // ========== Test 9: MIN ==========
+    printf("Test 9: MIN signed (32 lanes)\n");
+    for (int i = 0; i < 32; i++) {
+        a[i] = (i < 16) ? (0x80000000 + i) : i;  // 前16个负数
+        b[i] = 100;
+        int32_t sa = (int32_t)a[i];
+        int32_t sb = (int32_t)b[i];
+        expected[i] = (sa < sb) ? a[i] : b[i];
+    }
+    send_instr(dut, m_trace, make_instr(OP_MIN), a, b);
+    
+    if (wait_result(dut, m_trace, result)) {
+        print_lanes(result, "  Result");
+        if (check_lanes(result, expected, "MIN")) passed++; else failed++;
+    } else {
+        printf("\033[31m[FAIL]\033[0m MIN timeout\n");
+        failed++;
+    }
+    printf("\n");
+    
+    // ========== Test 10: MAX ==========
+    printf("Test 10: MAX signed (32 lanes)\n");
+    for (int i = 0; i < 32; i++) {
+        a[i] = i * 10;
+        b[i] = 150;
+        int32_t sa = (int32_t)a[i];
+        int32_t sb = (int32_t)b[i];
+        expected[i] = (sa > sb) ? a[i] : b[i];
+    }
+    send_instr(dut, m_trace, make_instr(OP_MAX), a, b);
+    
+    if (wait_result(dut, m_trace, result)) {
+        print_lanes(result, "  Result");
+        if (check_lanes(result, expected, "MAX")) passed++; else failed++;
+    } else {
+        printf("\033[31m[FAIL]\033[0m MAX timeout\n");
+        failed++;
+    }
+    printf("\n");
+    
+    // ========== Test 11: Pipeline Back-to-Back ==========
+    printf("Test 11: Pipeline back-to-back (3 instructions)\n");
     
     // 清空流水线
     for (int i = 0; i < 5; i++) posedge(dut, m_trace);
@@ -303,7 +414,6 @@ int main(int argc, char** argv) {
     bool r1_ok = false, r2_ok = false, r3_ok = false;
     
     for (int i = 0; i < 6 && results < 3; i++) {
-        
         if (dut->valid_out) {
             results++;
             if (results == 1) {
@@ -332,6 +442,67 @@ int main(int argc, char** argv) {
     } else {
         printf("\033[31m[FAIL]\033[0m Pipeline: got %d results, r1=%d, r2=%d, r3=%d\n", 
                results, r1_ok, r2_ok, r3_ok);
+        failed++;
+    }
+    printf("\n");
+    
+    // ========== Test 12: Pipeline with 1-cycle gap ==========
+    printf("Test 12: Pipeline with 1-cycle gap\n");
+    
+    // 清空流水线
+    for (int i = 0; i < 5; i++) posedge(dut, m_trace);
+    
+    // 指令1: ADD (100+200=300)
+    for (int i = 0; i < 32; i++) { a[i] = 100; b[i] = 200; }
+    send_instr(dut, m_trace, make_instr(OP_ADD), a, b);
+    
+    // 等待1周期
+    //posedge(dut, m_trace);
+    
+    // 指令2: SUB (500-123=377)
+    for (int i = 0; i < 32; i++) { a[i] = 500; b[i] = 123; }
+    send_instr(dut, m_trace, make_instr(OP_SUB), a, b);
+    
+    // 等待1周期
+    //posedge(dut, m_trace);
+    
+    // 指令3: MUL (7*8=56)
+    for (int i = 0; i < 32; i++) { a[i] = 7; b[i] = 8; }
+    send_instr(dut, m_trace, make_instr(OP_MUL), a, b);
+    
+    // 收集结果
+    uint32_t rg1[32], rg2[32], rg3[32];
+    bool rg1_ok = false, rg2_ok = false, rg3_ok = false;
+    int rg_results = 0;
+    
+    for (int i = 0; i < 6 && rg_results < 3; i++) {
+        if (dut->valid_out) {
+            rg_results++;
+            if (rg_results == 1) {
+                get_result(dut, rg1);
+                rg1_ok = (rg1[0] == 300);
+                printf("  Result 1 (ADD): %s (lane0=0x%08x, exp=0x%08x)\n", 
+                       rg1_ok ? "OK" : "FAIL", rg1[0], 300);
+            } else if (rg_results == 2) {
+                get_result(dut, rg2);
+                rg2_ok = (rg2[0] == 377);
+                printf("  Result 2 (SUB): %s (lane0=0x%08x, exp=0x%08x)\n", 
+                       rg2_ok ? "OK" : "FAIL", rg2[0], 377);
+            } else {
+                get_result(dut, rg3);
+                rg3_ok = (rg3[0] == 56);
+                printf("  Result 3 (MUL): %s (lane0=0x%08x, exp=0x%08x)\n", 
+                       rg3_ok ? "OK" : "FAIL", rg3[0], 56);
+            }
+        }
+        posedge(dut, m_trace);
+    }
+    
+    if (rg_results == 3 && rg1_ok && rg2_ok && rg3_ok) {
+        printf("\033[32m[PASS]\033[0m Pipeline with gap\n");
+        passed++;
+    } else {
+        printf("\033[31m[FAIL]\033[0m Pipeline gap: got %d results\n", rg_results);
         failed++;
     }
     printf("\n");
