@@ -1,11 +1,11 @@
 // ============================================================================
 // Module: sync_fifo
-// Description: Synchronous FIFO with binary pointers, fall-through mode optional
+// Description: Synchronous FIFO with binary pointers, registered read output
 // ============================================================================
 module sync_fifo #(
     parameter DATA_W   = 32,
-    parameter DEPTH    = 16,            // Must be power of 2 for efficient empty/full
-    parameter PTR_W    = $clog2(DEPTH)  // Pointer width
+    parameter DEPTH    = 16,            // Must be power of 2
+    parameter PTR_W    = $clog2(DEPTH)
 ) (
     input  wire              clk,
     input  wire              rst_n,
@@ -21,11 +21,11 @@ module sync_fifo #(
     output wire              empty,
     
     // Status
-    output reg  [PTR_W:0]    count      // Current data count (extra bit for full/empty)
+    output reg  [PTR_W:0]    count      // Current data count
 );
 
     reg [DATA_W-1:0] mem [0:DEPTH-1];
-    reg [PTR_W:0]    wr_ptr;            // Extra bit for full/empty detection
+    reg [PTR_W:0]    wr_ptr;
     reg [PTR_W:0]    rd_ptr;
     
     wire [PTR_W-1:0] wr_addr = wr_ptr[PTR_W-1:0];
@@ -38,7 +38,7 @@ module sync_fifo #(
         end
     end
     
-    // Memory Read (registered output for timing)
+    // Memory Read (registered output)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             rdata <= {DATA_W{1'b0}};
@@ -63,7 +63,7 @@ module sync_fifo #(
                     wr_ptr <= wr_ptr + 1'b1;
                     count  <= count + 1'b1;
                 end
-                2'b11: begin // Simultaneous (pipeline balanced)
+                2'b11: begin // Simultaneous
                     wr_ptr <= wr_ptr + 1'b1;
                     rd_ptr <= rd_ptr + 1'b1;
                     // count unchanged
@@ -80,3 +80,4 @@ module sync_fifo #(
                    (wr_ptr[PTR_W-1:0] == rd_ptr[PTR_W-1:0]);
 
 endmodule
+

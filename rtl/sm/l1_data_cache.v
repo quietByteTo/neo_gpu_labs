@@ -12,7 +12,8 @@ module l1_data_cache #(
     parameter DATA_W        = 128,      // Interface data width (128bit)
     parameter SET_IDX_W     = $clog2(NUM_SETS),
     parameter LINE_OFFSET_W = $clog2(LINE_SIZE),
-    parameter TAG_W         = ADDR_W - SET_IDX_W - LINE_OFFSET_W
+    parameter TAG_W         = ADDR_W - SET_IDX_W - LINE_OFFSET_W,
+    parameter WAY_W         = $clog2(NUM_WAYS)  // 2 bits for 4 ways
 ) (
     input  wire                  clk,
     input  wire                  rst_n,
@@ -45,10 +46,6 @@ module l1_data_cache #(
     wire [SET_IDX_W-1:0] req_set    = req_addr[SET_IDX_W+LINE_OFFSET_W-1 : LINE_OFFSET_W];
     wire [LINE_OFFSET_W-1:0] req_offset = req_addr[LINE_OFFSET_W-1:0];
     
-    // Cache Structures using sram_2p instances
-    // Tag Array: Valid + Dirty + Tag
-    // Data Array: 128B per line = 1024 bits, split into 8 banks of 128bit
-    
     // State Machine
     localparam IDLE      = 3'b000;
     localparam LOOKUP    = 3'b001;  // Tag lookup stage
@@ -60,9 +57,10 @@ module l1_data_cache #(
     reg [2:0] state;
     reg [SET_IDX_W-1:0] flush_counter;
     
-    // Tag comparison ( combinational )
+    // Tag comparison (combinational)
     reg [NUM_WAYS-1:0] way_hit;
-    reg [1:0] hit_way;  // Which way hit (0-3)
+    reg [WAY_W-1:0] hit_way;        // ✅ 参数化位宽
+    reg [WAY_W-1:0] victim_way;     // ✅ 移到模块开头，参数化位宽
     
     // LRU Replacement (per set)
     reg [2:0] lru_bits [0:NUM_SETS-1];  // Simple 3-bit LRU for 4 ways
@@ -75,14 +73,16 @@ module l1_data_cache #(
     
     integer set_idx, way_idx, sub_idx;
     
-    // Tag Lookup (Combinational)
+    // Tag Lookup (Combinational) - ✅ 修复 LATCH
     always @(*) begin
-        way_hit = 4'b0000;
+        way_hit = {NUM_WAYS{1'b0}};
+        hit_way = {WAY_W{1'b0}};        // ✅ 默认值，避免 latch
+        
         for (way_idx = 0; way_idx < NUM_WAYS; way_idx = way_idx + 1) begin
             if (valid_bits[req_set][way_idx] && 
                 tag_array[req_set][way_idx] == req_tag) begin
                 way_hit[way_idx] = 1'b1;
-                hit_way = way_idx[1:0];
+                hit_way = way_idx[WAY_W-1:0];
             end
         end
     end
@@ -145,7 +145,8 @@ module l1_data_cache #(
                         
                         // Update LRU
                         // Simple algorithm: if hit_way==0, LRU=0; else increment
-                        if (hit_way != 2'd0) lru_bits[req_set] <= lru_bits[req_set] + 1'b1;
+                        if (hit_way != {WAY_W{1'b0}}) 
+                            lru_bits[req_set] <= lru_bits[req_set] + 1'b1;
                         
                         state <= IDLE;
                     end else begin
@@ -156,7 +157,7 @@ module l1_data_cache #(
                 
                 MISS: begin
                     // Select victim way (simplified: use LRU counter mod 4)
-                    victim_way <= lru_bits[req_set][1:0];
+                    victim_way <= lru_bits[req_set][WAY_W-1:0];
                     
                     if (dirty_bits[req_set][victim_way]) begin
                         state <= WRITEBACK;
@@ -197,11 +198,12 @@ module l1_data_cache #(
                         dirty_bits[flush_counter][way_idx] <= 1'b0;
                     end
                     
-                    if (flush_counter == NUM_SETS-1) begin
+                    // ✅ 修复 WIDTHEXPAND：显式指定位宽
+                    if (flush_counter == (NUM_SETS[SET_IDX_W-1:0] - {{SET_IDX_W-1{1'b0}}, 1'b1})) begin
                         flush_done <= 1'b1;
                         state <= IDLE;
                     end else begin
-                        flush_counter <= flush_counter + 1'b1;
+                        flush_counter <= flush_counter + {{SET_IDX_W-1{1'b0}}, 1'b1};
                     end
                 end
                 
@@ -209,7 +211,5 @@ module l1_data_cache #(
             endcase
         end
     end
-    
-    reg [1:0] victim_way;  // Selected victim for replacement
 
 endmodule

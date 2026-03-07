@@ -8,10 +8,10 @@ module sram_1p #(
     parameter DEPTH  = 1024             // Depth (default 2^ADDR_W)
 ) (
     input  wire              clk,
-    input  wire              rst_n,     // Async reset, active low (optional, for initialization)
+    input  wire              rst_n,     // Async reset, active low
     
     // Control
-    input  wire              ce,        // Chip Enable (power saving)
+    input  wire              ce,        // Chip Enable
     input  wire              wr_en,     // Write Enable (1=write, 0=read)
     
     // Interface
@@ -30,17 +30,11 @@ module sram_1p #(
         if (!rst_n) begin
             rdata <= {DATA_W{1'b0}};
         end else if (ce) begin
+            // Read-first: 先读，后写
+            rdata <= mem[addr];
             if (wr_en) begin
-                mem[addr] <= wdata;     // Write
+                mem[addr] <= wdata;
             end
-            rdata <= mem[addr];         // Read (old data if write, new data next cycle)
-        end
-    end
-    
-    // Optional: Initialize to 0 for simulation (Verilator friendly)
-    initial begin
-        for (i = 0; i < DEPTH; i = i + 1) begin
-            mem[i] = {DATA_W{1'b0}};
         end
     end
 

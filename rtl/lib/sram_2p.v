@@ -27,36 +27,31 @@ module sram_2p #(
     reg [DATA_W-1:0] mem [0:DEPTH-1];
     integer i;
     
-    // Port A Logic (R/W)
+    // Port A Logic (R/W) - Read-First
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             a_rdata <= {DATA_W{1'b0}};
         end else if (a_ce) begin
+            a_rdata <= mem[a_addr];     // Read-First: read old data
             if (a_wr_en) begin
-                mem[a_addr] <= a_wdata;
+                mem[a_addr] <= a_wdata; // Then write
             end
-            a_rdata <= mem[a_addr];
         end
     end
     
     // Port B Logic (Read-only) with Bypass
-    // If A writes and B reads same address in same cycle, B gets new data (bypass)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             b_rdata <= {DATA_W{1'b0}};
         end else if (b_ce) begin
+            // Bypass: if A writes same address, B gets new data
             if (a_wr_en && a_ce && (a_addr == b_addr)) begin
-                b_rdata <= a_wdata;     // Bypass: forward write data to read
+                b_rdata <= a_wdata;
             end else begin
-                b_rdata <= mem[b_addr]; // Normal read
+                b_rdata <= mem[b_addr];
             end
-        end
-    end
-    
-    initial begin
-        for (i = 0; i < DEPTH; i = i + 1) begin
-            mem[i] = {DATA_W{1'b0}};
         end
     end
 
 endmodule
+

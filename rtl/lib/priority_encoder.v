@@ -1,6 +1,6 @@
 // ============================================================================
 // Module: priority_encoder
-// Description: Fixed priority encoder, finds highest bit set
+// Description: Fixed priority encoder, finds lowest bit set (LSB priority)
 // ============================================================================
 module priority_encoder #(
     parameter N = 32,
@@ -14,14 +14,16 @@ module priority_encoder #(
     assign valid = |in;
     
     integer i;
+    reg found;  // 标志位替代 disable（Verilator 更友好）
     
-    // 给 always 块命名，然后用 disable 终止
-    always @(*) begin : encode_loop
+    always @(*) begin
         out = {W{1'b0}};
-        for (i = 0; i < N; i = i + 1) begin
+        found = 1'b0;
+        
+        for (i = 0; i < N && !found; i = i + 1) begin
             if (in[i]) begin
                 out = i[W-1:0];
-                disable encode_loop;    // ✅ 终止命名块，跳出循环
+                found = 1'b1;  // 设置标志，下次循环退出
             end
         end
     end
