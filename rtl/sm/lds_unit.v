@@ -48,20 +48,16 @@ module lds_unit #(
     endgenerate
     
     // Bank Instances (32 banks)
-    // Each bank: sram_2p (1RW + 1R), but we need multi-port for lane conflicts
-    // Simplification: Each cycle, each bank can accept 1 request (others stall)
-    reg  [DATA_W-1:0] bank_mem [0:NUM_BANKS-1][0:BANK_SIZE/4-1];  // Use array for flexibility
+    reg  [DATA_W-1:0] bank_mem [0:NUM_BANKS-1][0:BANK_SIZE/4-1];
     
     // Conflict Detection Logic
-    // Check if multiple lanes access same bank in same cycle
     reg [NUM_LANES-1:0] lane_granted;
-    reg [4:0] bank_conflict_map [0:NUM_BANKS-1];  // Which lane wins per bank (max 32)
+    reg [4:0] bank_conflict_map [0:NUM_BANKS-1];
     reg bank_has_req [0:NUM_BANKS-1];
     
     integer b, l;
     
     always @(*) begin
-        // Initialize
         for (b = 0; b < NUM_BANKS; b = b + 1) begin
             bank_has_req[b] = 1'b0;
             bank_conflict_map[b] = 5'd0;
@@ -72,18 +68,15 @@ module lds_unit #(
         end
         conflict_count = 5'd0;
         
-        // First-pass: mark requests per bank, first-come-first-serve (lower lane ID wins)
         for (l = 0; l < NUM_LANES; l = l + 1) begin
             if (lds_valid[l]) begin
                 b = lane_bank_sel[l];
                 if (!bank_has_req[b]) begin
-                    // First request to this bank
                     bank_has_req[b] = 1'b1;
                     bank_conflict_map[b] = l[4:0];
                     lane_granted[l] = 1'b1;
                     lds_ready[l] = 1'b1;
                 end else begin
-                    // Conflict: stall this lane
                     conflict_count = conflict_count + 1'b1;
                 end
             end
@@ -92,11 +85,43 @@ module lds_unit #(
     
     assign conflict_detected = (conflict_count != 0);
     
-    // Execution Phase (Sequential)
-    integer lane_idx;
-    reg [DATA_W-1:0] read_data [0:NUM_LANES-1];
-    reg [DATA_W-1:0] atomic_result;
+    // 组合逻辑计算 any_valid
+    reg any_valid;
+    integer v;
+    always @(*) begin
+        any_valid = 1'b0;
+        for (v = 0; v < NUM_LANES; v = v + 1) begin
+            any_valid = any_valid | lds_valid[v];
+        end
+    end
     
+    // 组合逻辑计算 atomic_result
+    reg [DATA_W-1:0] atomic_result [0:NUM_LANES-1];
+    reg [DATA_W-1:0] old_value [0:NUM_LANES-1];
+    
+    always @(*) begin
+        for (l = 0; l < NUM_LANES; l = l + 1) begin
+            atomic_result[l] = {DATA_W{1'b0}};
+            old_value[l] = {DATA_W{1'b0}};
+            if (lane_granted[l]) begin
+                b = lane_bank_sel[l];
+                old_value[l] = bank_mem[b][lane_bank_addr[l]];
+                if (atomic_en) begin
+                    case (atomic_op)
+                        3'd1: atomic_result[l] = old_value[l] + lds_wdata[l];
+                        3'd2: atomic_result[l] = (old_value[l] < lds_wdata[l]) ? old_value[l] : lds_wdata[l];
+                        3'd3: atomic_result[l] = (old_value[l] > lds_wdata[l]) ? old_value[l] : lds_wdata[l];
+                        3'd4: atomic_result[l] = old_value[l] & lds_wdata[l];
+                        3'd5: atomic_result[l] = old_value[l] | lds_wdata[l];
+                        3'd6: atomic_result[l] = old_value[l] ^ lds_wdata[l];
+                        default: atomic_result[l] = lds_wdata[l];
+                    endcase
+                end
+            end
+        end
+    end
+    
+    // Execution Phase (Sequential)
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             lds_rdata_valid <= 1'b0;
@@ -104,34 +129,19 @@ module lds_unit #(
                 lds_rdata[l] <= {DATA_W{1'b0}};
             end
         end else begin
-            lds_rdata_valid <= |lds_valid;  // Valid if any lane requested
+            lds_rdata_valid <= any_valid;
             
             for (l = 0; l < NUM_LANES; l = l + 1) begin
                 if (lane_granted[l]) begin
                     b = lane_bank_sel[l];
                     if (lds_wr_en[l] || atomic_en) begin
-                        // Read-Modify-Write for Atomic or normal Write
                         if (atomic_en) begin
-                            // Atomic operation
-                            case (atomic_op)
-                                3'd1: atomic_result = bank_mem[b][lane_bank_addr[l]] + lds_wdata[l]; // ADD
-                                3'd2: atomic_result = (bank_mem[b][lane_bank_addr[l]] < lds_wdata[l]) ? 
-                                                      bank_mem[b][lane_bank_addr[l]] : lds_wdata[l]; // MIN
-                                3'd3: atomic_result = (bank_mem[b][lane_bank_addr[l]] > lds_wdata[l]) ? 
-                                                      bank_mem[b][lane_bank_addr[l]] : lds_wdata[l]; // MAX
-                                3'd4: atomic_result = bank_mem[b][lane_bank_addr[l]] & lds_wdata[l]; // AND
-                                3'd5: atomic_result = bank_mem[b][lane_bank_addr[l]] | lds_wdata[l]; // OR
-                                3'd6: atomic_result = bank_mem[b][lane_bank_addr[l]] ^ lds_wdata[l]; // XOR
-                                default: atomic_result = lds_wdata[l];
-                            endcase
-                            bank_mem[b][lane_bank_addr[l]] <= atomic_result;
-                            lds_rdata[l] <= bank_mem[b][lane_bank_addr[l]];  // Return old value
+                            bank_mem[b][lane_bank_addr[l]] <= atomic_result[l];
+                            lds_rdata[l] <= old_value[l];
                         end else begin
-                            // Normal write
                             bank_mem[b][lane_bank_addr[l]] <= lds_wdata[l];
                         end
                     end else begin
-                        // Read
                         lds_rdata[l] <= bank_mem[b][lane_bank_addr[l]];
                     end
                 end
@@ -139,7 +149,7 @@ module lds_unit #(
         end
     end
     
-    // Initialize memory (Verilator)
+    // Initialize memory
     integer init_b, init_a;
     initial begin
         for (init_b = 0; init_b < NUM_BANKS; init_b = init_b + 1) begin
@@ -150,3 +160,4 @@ module lds_unit #(
     end
 
 endmodule
+
