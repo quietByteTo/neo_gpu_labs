@@ -21,7 +21,7 @@ module warp_scheduler #(
 );
 
     // Internal state
-    reg [NUM_WARPS-1:0] priority_mask;  // For round-robin (optional extension)
+    //reg [NUM_WARPS-1:0] priority_mask;  // For round-robin (optional extension)
     wire [NUM_WARPS-1:0] eligible_warps;
     wire [WARP_ID_W-1:0] selected_id;
     wire                 has_selection;
