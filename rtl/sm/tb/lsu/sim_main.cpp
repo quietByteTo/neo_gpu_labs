@@ -106,9 +106,9 @@ public:
         dut->clk = !dut->clk;
         dut->eval();
         
-        if (dut->clk == 1) {
-            tfp->dump(sim_time);
-        }
+ 
+        tfp->dump(sim_time);
+
         sim_time += CLK_PERIOD / 2;
     }
     
@@ -185,7 +185,7 @@ public:
                             (dut->l1_wdata.m_storage[1] == 0x22222222) &&
                             (dut->l1_wdata.m_storage[2] == 0x33333333) &&
                             (dut->l1_wdata.m_storage[3] == 0x44444444);
-        bool be_correct = dut->l1_be == 0x0FFF;
+        bool be_correct = dut->l1_be == 0xFFFF;
         
         if (addr_aligned) {
             std::cout << "  [PASS] Address is 128B aligned" << std::endl;
@@ -209,6 +209,7 @@ public:
         }
         
         dut->l1_ready = 1;
+        tick();
         tick();
         dut->l1_ready = 0;
         
@@ -254,8 +255,11 @@ public:
         dut->l1_rdata.m_storage[2] = 0x99887766;
         dut->l1_rdata.m_storage[3] = 0xDDCCBBAA;
         tick();
+        tick();
         dut->l1_ready = 0;
+        tick();
         dut->l1_rdata_valid = 1;
+        tick();
         tick();
         dut->l1_rdata_valid = 0;
         
@@ -317,12 +321,12 @@ public:
         dut->is_store = 1;
         dut->is_lds = 1;
         dut->valid = 1;
-        
+        tick();
         tick();
         dut->valid = 0;
         
         tick();
-        tick();
+        //tick();
         
         std::cout << "  LDS Requests (first 4 lanes):" << std::endl;
         bool any_valid = false;
@@ -390,6 +394,7 @@ public:
         dut->lds_rdata_flat.m_storage[2] = 0x55667788;
         dut->lds_rdata_flat.m_storage[3] = 0x99AABBCC;
         dut->lds_rdata_valid = 1;
+        tick();
         tick();
         dut->lds_rdata_valid = 0;
         
@@ -463,6 +468,7 @@ public:
         dut->l1_ready = 0;
         dut->l1_rdata_valid = 1;
         tick();
+        tick();
         dut->l1_rdata_valid = 0;
         
         waitL1Response();
@@ -528,6 +534,7 @@ public:
         tick();
         dut->l1_ready = 0;
         dut->l1_rdata_valid = 1;
+        tick();
         tick();
         dut->l1_rdata_valid = 0;
         

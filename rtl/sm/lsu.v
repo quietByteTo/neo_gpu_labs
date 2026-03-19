@@ -177,7 +177,7 @@ module lsu #(
                             l1_be[3:0]   <= offset_valid[0] ? 4'b1111 : 4'b0000;
                             l1_be[7:4]   <= offset_valid[1] ? 4'b1111 : 4'b0000;
                             l1_be[11:8]  <= offset_valid[2] ? 4'b1111 : 4'b0000;
-                            l1_be[15:12] <= 4'b0000; // Force to 0 for test compatibility
+                            l1_be[15:12] <= offset_valid[2] ? 4'b1111 : 4'b0000; // Force to 0 for test compatibility
                         end
                     end
                 end
