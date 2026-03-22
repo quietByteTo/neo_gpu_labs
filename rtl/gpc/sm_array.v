@@ -55,9 +55,15 @@ module sm_array #(
     wire                      sm_l1_ready    [0:NUM_SM-1];
     wire [L1_DATA_W-1:0]      sm_l1_rdata    [0:NUM_SM-1];
     wire                      sm_l1_rvalid   [0:NUM_SM-1];
+
+    // 每路任务 FIFO 的 full（与 sm_core 的 task_ready 分离，避免与 .full() 多驱动同一 net）
+    wire [NUM_SM-1:0]         fifo_full;
     
-    // Task Distribution Demux (based on task_sm_id)
-    assign task_ready = sm_task_ready[task_sm_id];
+    // Task Distribution Demux (based on task_sm_id)：GPC 仅当目标 SM 的 FIFO 未满时可写
+    assign task_ready = !fifo_full[task_sm_id];
+
+    // sm_core_top 无响应反压口：阵列始终可接收 Router 返回的读数据拍
+    assign l1_resp_ready = 1'b1;
     
     genvar i;
     generate
@@ -66,8 +72,10 @@ module sm_array #(
             wire [63:0]               fifo_pc;
             wire [WARP_ID_W-1:0]      fifo_warp;
             wire [4:0]                fifo_num_warps;
-            wire                      fifo_valid_out;
+            wire                      fifo_empty;
             wire                      fifo_ready_out;
+            // DEPTH=4 -> PTR_W=$clog2(4)=2，count 宽 PTR_W+1=3
+            wire [2:0]                fifo_count_unused;
             
             sync_fifo #(
                 .DATA_W(64 + WARP_ID_W + 5),  // PC + warp_id + num_warps
@@ -77,15 +85,19 @@ module sm_array #(
                 .rst_n(rst_n),
                 .wr_en(task_valid && (task_sm_id == i)),
                 .wdata({task_entry_pc, task_warp_id, task_num_warps}),
-                .full(!sm_task_ready[i]),
+                .full(fifo_full[i]),
                 .rd_en(fifo_ready_out),
                 .rdata({fifo_pc, fifo_warp, fifo_num_warps}),
-                .empty(!fifo_valid_out),
-                .count()
+                .empty(fifo_empty),
+                .count(fifo_count_unused)
             );
             
-            assign sm_task_valid[i] = fifo_valid_out;
+            // 有数据可读：!empty（勿用 .empty(!wire) 再 assign wire，会与隐式驱动冲突）
+            assign sm_task_valid[i] = !fifo_empty;
             assign fifo_ready_out = sm_task_ready[i];  // SM accepts when ready
+
+            wire [31:0]               perf_inst_unused;
+            wire [NUM_WARPS-1:0]      warp_status_unused;
             
             // SM Core Instance
             sm_core_top #(
@@ -107,8 +119,8 @@ module sm_array #(
                 .l1_req_ready(sm_l1_ready[i]),
                 .l1_resp_data(sm_l1_rdata[i]),
                 .l1_resp_valid(sm_l1_rvalid[i]),
-                .perf_inst_count(),
-                .warp_status()
+                .perf_inst_count(perf_inst_unused),
+                .warp_status(warp_status_unused)
             );
             
             assign sm_idle[i] = !sm_task_valid[i];  // Simplified idle detection
@@ -185,3 +197,4 @@ module sm_array #(
     // In full implementation, need credit-based flow control per SM
 
 endmodule
+
