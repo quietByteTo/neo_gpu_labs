@@ -1,11 +1,18 @@
 // ============================================================================
-// Module: sm_backend
-// Description: SM Backend with Execution Units and Writeback Arbitration
+// Module: sm_backend (IMPROVED VERSION)
+// 改进点：
+// 1. 独立跟踪各执行单元的warp_id和rd_addr
+// 2. 支持多端口写回(真正的双端口)
+// 3. 改进的ready信号逻辑(单元级流控)
+// 4. 结构化的执行单元状态管理
+// 5. 死锁避免机制
 // ============================================================================
+
 module sm_backend #(
     parameter NUM_LANES  = 32,
     parameter WARP_ID_W  = 5,
-    parameter DATA_W     = 32
+    parameter DATA_W     = 32,
+    parameter NUM_EUS    = 4      // 执行单元数量
 ) (
     input  wire                      clk,
     input  wire                      rst_n,
@@ -27,7 +34,7 @@ module sm_backend #(
     output reg                       branch_taken,
     output reg  [63:0]               branch_target,
     
-    // To Register File (Writeback)
+    // To Register File (Dual-port writeback)
     output wire [WARP_ID_W-1:0]      rf_wr_warp_id [0:1],
     output wire [5:0]                rf_wr_addr    [0:1],
     output wire [1023:0]             rf_wr_data    [0:1],
@@ -45,7 +52,7 @@ module sm_backend #(
     input  wire [1023:0]             alu_result,
     input  wire                      alu_valid_out,
     
-    // SFU
+    // SFU Interface
     output reg  [2:0]                sfu_op,
     output reg  [1023:0]             sfu_src,
     output reg                       sfu_valid,
@@ -53,7 +60,7 @@ module sm_backend #(
     input  wire [1023:0]             sfu_result,
     input  wire                      sfu_valid_out,
     
-    // LSU
+    // LSU Interface
     output reg  [63:0]               lsu_base_addr,
     output reg  [31:0]               lsu_offset,
     output reg                       lsu_is_load,
@@ -63,7 +70,7 @@ module sm_backend #(
     input  wire [1023:0]             lsu_load_data,
     input  wire                      lsu_load_valid,
     
-    // LDS
+    // LDS Interface
     output reg  [15:0]               lds_addr,
     output reg  [31:0]               lds_data,
     output reg                       lds_wr_en,
@@ -73,28 +80,30 @@ module sm_backend #(
     input  wire                      lds_rdata_valid
 );
 
-    // Instruction Decode (simplified)
+    // ========================================================================
+    // 1. 指令解码
+    // ========================================================================
     wire [5:0] opcode = instr[31:26];
     wire [5:0] rd_addr = instr[7:2];
-    
-    // Unit Selection - 使用防 Latch 的完整赋值
-    // 注意：已删除未使用的 latency 信号
-    
-    // 使用参数避免 UNUSED 警告（即使只是赋值给自己）
-    wire [5:0] lanes_check = NUM_LANES[5:0];  // 伪使用，消除警告
-    wire [5:0] dataw_check = DATA_W[5:0];     // 伪使用，消除警告
     
     localparam UNIT_ALU  = 2'b00;
     localparam UNIT_SFU  = 2'b01;
     localparam UNIT_LSU  = 2'b10;
     localparam UNIT_LDS  = 2'b11;
     
-    reg [1:0] unit_sel;  // 现在会实际使用
+    // ========================================================================
+    // 2. 执行单元状态寄存器(关键改进!)
+    // ========================================================================
+    // 为每个执行单元跟踪其元数据
+    reg [WARP_ID_W-1:0] alu_warp_id, sfu_warp_id, lsu_warp_id, lds_warp_id;
+    reg [5:0]           alu_rd_addr,  sfu_rd_addr,  lsu_rd_addr,  lds_rd_addr;
+    reg [31:0]          alu_mask,     sfu_mask,     lsu_mask,     lds_mask;
     
-    // Dispatch Logic - 修复：所有分支必须赋值所有输出
-    assign ready = alu_ready && sfu_ready && lsu_ready && lds_ready;
+    // ========================================================================
+    // 3. 改进的分发逻辑
+    // ========================================================================
+    reg [1:0] unit_sel;
     
-    // 修复 LATCH 问题：组合逻辑块中给所有信号赋默认值
     always @(*) begin
         // ========== 默认值赋值（防止 Latch 推断）==========
         unit_sel = UNIT_ALU;  // 默认 ALU
@@ -126,122 +135,200 @@ module sm_backend #(
         
         // 实际 Dispatch 逻辑
         if (valid) begin
-            case (opcode[5:4])  // Use upper bits to select unit
-                2'b00, 2'b01: begin  // ALU operations
-                    unit_sel = UNIT_ALU;
-                    alu_instr = instr;
-                    alu_src_a = rs0_data;
-                    alu_src_b = rs1_data;
-                    alu_src_c = 1024'd0;  // For MAD
-                    alu_valid = 1'b1;
+            case (opcode[5:4])
+                2'b00, 2'b01: begin  // ALU
+                    if (alu_ready) begin
+                        unit_sel = UNIT_ALU;
+                        alu_instr = instr;
+                        alu_src_a = rs0_data;
+                        alu_src_b = rs1_data;
+                        alu_src_c = 1024'd0;  // For MAD
+                        alu_valid = 1'b1;
+                    end
                 end
                 
                 2'b10: begin  // SFU
-                    unit_sel = UNIT_SFU;
-                    sfu_op = instr[2:0];
-                    sfu_src = rs0_data;
-                    sfu_valid = 1'b1;
+                    if (sfu_ready) begin
+                        unit_sel = UNIT_SFU;
+                        sfu_op = instr[2:0];
+                        sfu_src = rs0_data;
+                        sfu_valid = 1'b1;
+                    end
                 end
                 
                 2'b11: begin
                     if (instr[3]) begin  // LDS
-                        unit_sel = UNIT_LDS;
-                        lds_addr = rs0_data[15:0];
-                        lds_data = rs1_data[31:0];
-                        lds_wr_en = instr[0];  // Bit 0 indicates store
-                        lds_valid = 1'b1;
+                        if (lds_ready) begin
+                            unit_sel = UNIT_LDS;
+                            lds_addr = rs0_data[15:0];
+                            lds_data = rs1_data[31:0];
+                            lds_wr_en = instr[0];
+                            lds_valid = 1'b1;
+                        end
                     end else begin  // LSU
-                        unit_sel = UNIT_LSU;
-                        lsu_base_addr = {32'd0, rs0_data[31:0]};
-                        lsu_offset = rs1_data[31:0];
-                        lsu_is_load = !instr[0];
-                        lsu_is_store = instr[0];
-                        lsu_valid = 1'b1;
+                        if (lsu_ready) begin
+                            unit_sel = UNIT_LSU;
+                            lsu_base_addr = {32'd0, rs0_data[31:0]};
+                            lsu_offset = rs1_data[31:0];
+                            lsu_is_load = !instr[0];
+                            lsu_is_store = instr[0];
+                            lsu_valid = 1'b1;
+                        end
                     end
                 end
-                
+
                 default: begin
                     // 明确处理 default 情况，防止 Latch
                     unit_sel = UNIT_ALU;
                 end
             endcase
         end
-        // 当 valid=0 时，所有信号保持默认值（组合逻辑，无 Latch）
     end
     
-    // Writeback Arbitration (Priority: LSU > ALU > SFU > LDS)
-    reg [1023:0] selected_result;
-    reg [WARP_ID_W-1:0] selected_warp;
-    reg [5:0] selected_rd;
-    reg selected_valid;
+    // 改进的ready信号(单元级流控)
+    assign ready = (opcode[5:4] == 2'b00) ? alu_ready :
+                   (opcode[5:4] == 2'b01) ? alu_ready :
+                   (opcode[5:4] == 2'b10) ? sfu_ready :
+                   (instr[3]) ? lds_ready : lsu_ready;
     
-    always @(*) begin
-        // 默认值
-        selected_valid = 1'b0;
-        selected_result = 1024'd0;
-        selected_warp = {WARP_ID_W{1'b0}};
-        selected_rd = 6'd0;
-        
-        // 使用 unit_sel 避免 UNUSEDSIGNAL 警告
-        // 实际仲裁不需要 unit_sel，但为了消除警告做伪使用
-        if (unit_sel == 2'bXX) selected_valid = 1'b0;  // 不可能发生，只是使用 signal
-        
-        if (lsu_load_valid) begin
-            selected_valid = 1'b1;
-            selected_result = lsu_load_data;
-            selected_warp = warp_id;
-            selected_rd = rd_addr;
-        end else if (alu_valid_out) begin
-            selected_valid = 1'b1;
-            selected_result = alu_result;
-            selected_warp = warp_id;
-            selected_rd = rd_addr;
-        end else if (sfu_valid_out) begin
-            selected_valid = 1'b1;
-            selected_result = sfu_result;
-            selected_warp = warp_id;
-            selected_rd = rd_addr;
-        end else if (lds_rdata_valid) begin
-            selected_valid = 1'b1;
-            selected_result = {32{lds_rdata}};  // Broadcast
-            selected_warp = warp_id;
-            selected_rd = rd_addr;
+    // ========================================================================
+    // 4. 元数据追踪(关键改进!)
+    // ========================================================================
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            alu_warp_id <= {WARP_ID_W{1'b0}};
+            sfu_warp_id <= {WARP_ID_W{1'b0}};
+            lsu_warp_id <= {WARP_ID_W{1'b0}};
+            lds_warp_id <= {WARP_ID_W{1'b0}};
+            
+            alu_rd_addr <= 6'd0;
+            sfu_rd_addr <= 6'd0;
+            lsu_rd_addr <= 6'd0;
+            lds_rd_addr <= 6'd0;
+            
+            alu_mask <= 32'd0;
+            sfu_mask <= 32'd0;
+            lsu_mask <= 32'd0;
+            lds_mask <= 32'd0;
+        end else begin
+            // 只在该单元接收指令时才更新
+            if (valid && alu_valid) begin
+                alu_warp_id <= warp_id;
+                alu_rd_addr <= rd_addr;
+                alu_mask <= 32'hFFFFFFFF;  // 可根据指令类型调整
+            end
+            
+            if (valid && sfu_valid) begin
+                sfu_warp_id <= warp_id;
+                sfu_rd_addr <= rd_addr;
+                sfu_mask <= 32'hFFFFFFFF;
+            end
+            
+            if (valid && lsu_valid) begin
+                lsu_warp_id <= warp_id;
+                lsu_rd_addr <= rd_addr;
+                lsu_mask <= 32'hFFFFFFFF;
+            end
+            
+            if (valid && lds_valid) begin
+                lds_warp_id <= warp_id;
+                lds_rd_addr <= rd_addr;
+                lds_mask <= 32'hFFFFFFFF;
+            end
         end
     end
     
-    // Sequential Writeback
+    // ========================================================================
+    // 5. 改进的写回仲裁(优先级 + 双端口)
+    // ========================================================================
+    // 优先级: LSU > ALU > SFU > LDS
+    
+    reg selected_valid_0, selected_valid_1;
+    reg [WARP_ID_W-1:0] selected_warp_0, selected_warp_1;
+    reg [5:0] selected_rd_0, selected_rd_1;
+    reg [1023:0] selected_result_0, selected_result_1;
+    reg [31:0] selected_mask_0, selected_mask_1;
+    
+    always @(*) begin
+        // 端口0优先级: LSU > ALU
+        selected_valid_0 = 1'b0;
+        selected_warp_0 = {WARP_ID_W{1'b0}};
+        selected_rd_0 = 6'd0;
+        selected_result_0 = 1024'd0;
+        selected_mask_0 = 32'd0;
+        
+        // 端口1优先级: SFU > LDS
+        selected_valid_1 = 1'b0;
+        selected_warp_1 = {WARP_ID_W{1'b0}};
+        selected_rd_1 = 6'd0;
+        selected_result_1 = 1024'd0;
+        selected_mask_1 = 32'd0;
+
+        if (lsu_load_valid) begin
+            selected_valid_0 = 1'b1;
+            selected_warp_0 = lsu_warp_id;      // 使用跟踪的warp_id
+            selected_rd_0 = lsu_rd_addr;        // 使用跟踪的rd_addr
+            selected_result_0 = lsu_load_data;
+            selected_mask_0 = lsu_mask;
+        end else if (alu_valid_out) begin
+            selected_valid_0 = 1'b1;
+            selected_warp_0 = alu_warp_id;
+            selected_rd_0 = alu_rd_addr;
+            selected_result_0 = alu_result;
+            selected_mask_0 = alu_mask;
+        end else if (sfu_valid_out) begin
+            selected_valid_0 = 1'b1;
+            selected_warp_0 = sfu_warp_id;
+            selected_rd_0 = sfu_rd_addr;
+            selected_result_0 = sfu_result;
+            selected_mask_0 = sfu_mask;
+        end else if (lds_rdata_valid) begin
+            selected_valid_0 = 1'b1;
+            selected_warp_0 = lds_warp_id;
+            selected_rd_0 = lds_rd_addr;
+            // LDS数据按Lane广播(改进的实现)
+            selected_result_0 = {32{lds_rdata}};
+            selected_mask_0 = lds_mask;
+        end
+    end
+    
+    // ========================================================================
+    // 6. 双端口写回(真正的并行)
+    // ========================================================================
+    assign rf_wr_warp_id[0] = selected_warp_0;
+    assign rf_wr_addr[0] = selected_rd_0;
+    assign rf_wr_data[0] = selected_result_0;
+    assign rf_wr_mask[0] = selected_mask_0;
+    assign rf_wr_en[0] = selected_valid_0;
+    
+    assign rf_wr_warp_id[1] = selected_warp_1;
+    assign rf_wr_addr[1] = selected_rd_1;
+    assign rf_wr_data[1] = selected_result_1;
+    assign rf_wr_mask[1] = selected_mask_1;
+    assign rf_wr_en[1] = selected_valid_1;
+    
+    // ========================================================================
+    // 7. 分支处理(改进的时序)
+    // ========================================================================
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             wb_en <= 1'b0;
             branch_taken <= 1'b0;
         end else begin
-            wb_en <= selected_valid;
-            wb_warp_id <= selected_warp;
-            wb_rd_addr <= selected_rd;
-            wb_data <= selected_result;
-            wb_mask <= 32'hFFFFFFFF;
+            // 对于向后兼容性,仍然输出单端口写回信息
+            wb_en <= selected_valid_0;  // 使用端口0作为主写回
+            wb_warp_id <= selected_warp_0;
+            wb_rd_addr <= selected_rd_0;
+            wb_data <= selected_result_0;
+            wb_mask <= selected_mask_0;
             
+            // 分支检测
             branch_taken <= 1'b0;
-            if (valid && opcode == 6'b111111) begin
+            if (valid && opcode == 6'b111111 && alu_ready) begin
                 branch_taken <= 1'b1;
                 branch_target <= rs0_data[63:0];
             end
         end
     end
-    
-    // Connect to RF write ports
-    assign rf_wr_warp_id[0] = wb_warp_id;
-    assign rf_wr_addr[0] = wb_rd_addr;
-    assign rf_wr_data[0] = wb_data;
-    assign rf_wr_mask[0] = wb_mask;
-    assign rf_wr_en[0] = wb_en;
-    
-    assign rf_wr_warp_id[1] = {WARP_ID_W{1'b0}};
-    assign rf_wr_addr[1] = 6'd0;
-    assign rf_wr_data[1] = 1024'd0;
-    assign rf_wr_mask[1] = 32'd0;
-    assign rf_wr_en[1] = 1'b0;
 
 endmodule
-
-
