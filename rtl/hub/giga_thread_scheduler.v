@@ -236,3 +236,4 @@ module giga_thread_scheduler #(
     assign ctas_completed = completed_count;
 
 endmodule
+
