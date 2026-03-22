@@ -8,8 +8,11 @@ VFLAGS = --cc --exe --build --trace -j 0 -Wall \
          -Wno-UNUSEDPARAM \
          -Wno-UNUSEDSIGNAL \
          -Wno-PINMISSING \
+         -Wno-PINCONNECTEMPTY \
+         -Wno-WIDTHEXPAND \
+		 -public-flat-rw \
          -CFLAGS -std=c++14
-
+            # 添加：暴露内部模块层次
 RTL_SRCS = \
 	$(LIB)/priority_encoder.v \
 	$(LIB)/sram_2p.v \
