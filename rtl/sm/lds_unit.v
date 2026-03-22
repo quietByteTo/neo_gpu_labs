@@ -55,12 +55,14 @@ module lds_unit #(
     reg [4:0] bank_conflict_map [0:NUM_BANKS-1];
     reg bank_has_req [0:NUM_BANKS-1];
     
-    integer b, l;
+    integer l;
+    integer bi;
+    reg [4:0] cur_bank0;
     
     always @(*) begin
-        for (b = 0; b < NUM_BANKS; b = b + 1) begin
-            bank_has_req[b] = 1'b0;
-            bank_conflict_map[b] = 5'd0;
+        for (bi = 0; bi < NUM_BANKS; bi = bi + 1) begin
+            bank_has_req[bi] = 1'b0;
+            bank_conflict_map[bi] = 5'd0;
         end
         for (l = 0; l < NUM_LANES; l = l + 1) begin
             lane_granted[l] = 1'b0;
@@ -69,11 +71,12 @@ module lds_unit #(
         conflict_count = 5'd0;
         
         for (l = 0; l < NUM_LANES; l = l + 1) begin
+            cur_bank0 = 5'd0;
             if (lds_valid[l]) begin
-                b = lane_bank_sel[l];
-                if (!bank_has_req[b]) begin
-                    bank_has_req[b] = 1'b1;
-                    bank_conflict_map[b] = l[4:0];
+                cur_bank0 = lane_bank_sel[l];
+                if (!bank_has_req[cur_bank0]) begin
+                    bank_has_req[cur_bank0] = 1'b1;
+                    bank_conflict_map[cur_bank0] = l[4:0];
                     lane_granted[l] = 1'b1;
                     lds_ready[l] = 1'b1;
                 end else begin
@@ -98,14 +101,16 @@ module lds_unit #(
     // 组合逻辑计算 atomic_result
     reg [DATA_W-1:0] atomic_result [0:NUM_LANES-1];
     reg [DATA_W-1:0] old_value [0:NUM_LANES-1];
+    reg [4:0]        cur_bank1;
     
     always @(*) begin
         for (l = 0; l < NUM_LANES; l = l + 1) begin
+            cur_bank1 = 5'd0;
             atomic_result[l] = {DATA_W{1'b0}};
             old_value[l] = {DATA_W{1'b0}};
             if (lane_granted[l]) begin
-                b = lane_bank_sel[l];
-                old_value[l] = bank_mem[b][lane_bank_addr[l]];
+                cur_bank1 = lane_bank_sel[l];
+                old_value[l] = bank_mem[cur_bank1][lane_bank_addr[l]];
                 if (atomic_en) begin
                     case (atomic_op)
                         3'd1: atomic_result[l] = old_value[l] + lds_wdata[l];
@@ -121,7 +126,7 @@ module lds_unit #(
         end
     end
     
-    // Execution Phase (Sequential)
+    // Execution Phase (Sequential)：索引用 lane_bank_sel[l]，避免时序块内阻塞赋值（BLKSEQ）
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             lds_rdata_valid <= 1'b0;
@@ -133,16 +138,15 @@ module lds_unit #(
             
             for (l = 0; l < NUM_LANES; l = l + 1) begin
                 if (lane_granted[l]) begin
-                    b = lane_bank_sel[l];
                     if (lds_wr_en[l] || atomic_en) begin
                         if (atomic_en) begin
-                            bank_mem[b][lane_bank_addr[l]] <= atomic_result[l];
+                            bank_mem[lane_bank_sel[l]][lane_bank_addr[l]] <= atomic_result[l];
                             lds_rdata[l] <= old_value[l];
                         end else begin
-                            bank_mem[b][lane_bank_addr[l]] <= lds_wdata[l];
+                            bank_mem[lane_bank_sel[l]][lane_bank_addr[l]] <= lds_wdata[l];
                         end
                     end else begin
-                        lds_rdata[l] <= bank_mem[b][lane_bank_addr[l]];
+                        lds_rdata[l] <= bank_mem[lane_bank_sel[l]][lane_bank_addr[l]];
                     end
                 end
             end

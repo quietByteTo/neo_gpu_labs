@@ -41,16 +41,17 @@ module sm_frontend #(
     
     // From Backend (Writeback/Control)
     input  wire [WARP_ID_W-1:0]      wb_warp_id,
+    input  wire [REG_ADDR_W-1:0]     wb_rd_addr,
     input  wire                      wb_branch_taken,
     input  wire [PC_W-1:0]           wb_branch_target,
     input  wire                      wb_valid,
     
-    // Scoreboard Interface
+    // Scoreboard Interface（stall 由片内 scoreboard 驱动，供观测/上层可选连接）
     output wire [WARP_ID_W-1:0]      sc_warp_id,
     output wire [REG_ADDR_W-1:0]     sc_rs0, sc_rs1, sc_rs2, sc_rd,
     output wire                      sc_rd_wr_en,
-    input  wire                      sc_stall_raw,
-    input  wire                      sc_stall_waw,
+    output wire                      sc_stall_raw,
+    output wire                      sc_stall_waw,
     
     // Status
     output wire [NUM_WARPS-1:0]      warp_active  // Which warps are active
@@ -59,7 +60,9 @@ module sm_frontend #(
     // PC Management (per warp)
     reg [PC_W-1:0] pc_array [0:NUM_WARPS-1];
     reg [NUM_WARPS-1:0] active_mask;
-    reg [NUM_WARPS-1:0] warp_ready;  // Not waiting on barrier/memory
+    // 简化：所有 warp 视为可调度（未接 barrier/长延迟等待模型）
+    wire [NUM_WARPS-1:0] warp_ready;
+    assign warp_ready = {NUM_WARPS{1'b1}};
     
     // Scheduler
     wire [WARP_ID_W-1:0] selected_warp;
@@ -92,8 +95,9 @@ module sm_frontend #(
         .rd_wr_en(sc_rd_wr_en),
         .stall_raw(sc_stall_raw),
         .stall_waw(sc_stall_waw),
+        .issue_valid(issue_valid),
         .wb_warp_id(wb_warp_id),
-        .wb_rd_addr(/* extract from wb_inst */),
+        .wb_rd_addr(wb_rd_addr),
         .wb_valid(wb_valid)
     );
     
@@ -178,3 +182,4 @@ module sm_frontend #(
     assign warp_active = active_mask;
 
 endmodule
+

@@ -52,9 +52,15 @@ module sm_core_top #(
     wire                 issue_valid;
     wire                 issue_ready;
     wire [WARP_ID_W-1:0] wb_wid;
+    wire [5:0]           wb_rd_addr;
+    wire [1023:0]        wb_data;
+    wire [31:0]          wb_mask;
+    wire                 wb_en;
     wire                 wb_branch;
     wire [63:0]          wb_branch_target;
     wire                 wb_valid;
+    
+    assign wb_valid = wb_en;
     
     // Scoreboard
     wire [WARP_ID_W-1:0] sc_wid;
@@ -87,6 +93,34 @@ module sm_core_top #(
     wire [31:0]          lds_rdata;
     wire                 lds_rdata_valid;
     
+    wire [15:0]          lds_addr_lane   [0:NUM_LANES-1];
+    wire [31:0]          lds_wdata_lane  [0:NUM_LANES-1];
+    wire                 lds_wr_en_lane  [0:NUM_LANES-1];
+    wire                 lds_valid_lane  [0:NUM_LANES-1];
+    wire                 lds_ready_lane  [0:NUM_LANES-1];
+    wire [31:0]          lds_rdata_lane  [0:NUM_LANES-1];
+    wire                 unused_bank_conflict;
+    wire [63:0]          ifetch_addr_dbg;
+    wire                 ifetch_valid_dbg;
+    wire [WARP_ID_W-1:0] lsu_resp_warp_id;
+    wire                 lds_conflict_det;
+    wire [4:0]           lds_conflict_cnt;
+    
+    genvar               gi_lds;
+    generate
+        for (gi_lds = 0; gi_lds < NUM_LANES; gi_lds = gi_lds + 1) begin : gen_lds_lane
+            assign lds_addr_lane[gi_lds]  = lds_addr;
+            assign lds_wdata_lane[gi_lds] = lds_data;
+            assign lds_wr_en_lane[gi_lds] = lds_wr_en;
+            assign lds_valid_lane[gi_lds] = lds_valid;
+        end
+    endgenerate
+    
+    assign lds_rdata    = lds_rdata_lane[0];
+    // 不向 backend 反馈 lds_ready_lane，避免 LDS 组合逻辑与 sm_backend 形成环路（Verilator UNOPTFLAT）。
+    // 集成时可改为寄存一拍或显式反压协议。
+    assign lds_ready    = 1'b1;
+    
     // Instantiate Register File
     register_file u_regfile (
         .clk(clk),
@@ -100,7 +134,7 @@ module sm_core_top #(
         .wr_data(rf_wr_data),
         .wr_mask(rf_wr_mask),
         .wr_en(rf_wr_en),
-        .bank_conflict(/* unused */)
+        .bank_conflict(unused_bank_conflict)
     );
     
     // Instantiate Frontend
@@ -111,8 +145,8 @@ module sm_core_top #(
         .start_warp_id(start_warp_id),
         .task_valid(task_valid),
         .task_ready(task_ready),
-        .ifetch_addr(/* connect to I-Cache */),
-        .ifetch_valid(),
+        .ifetch_addr(ifetch_addr_dbg),
+        .ifetch_valid(ifetch_valid_dbg),
         .ifetch_data(32'd0),  // Placeholder
         .ifetch_ready(1'b1),
         .rf_rd_warp_id(rf_rd_wid),
@@ -126,6 +160,7 @@ module sm_core_top #(
         .issue_valid(issue_valid),
         .issue_ready(issue_ready),
         .wb_warp_id(wb_wid),
+        .wb_rd_addr(wb_rd_addr),
         .wb_branch_taken(wb_branch),
         .wb_branch_target(wb_branch_target),
         .wb_valid(wb_valid),
@@ -151,10 +186,10 @@ module sm_core_top #(
         .valid(issue_valid),
         .ready(issue_ready),
         .wb_warp_id(wb_wid),
-        .wb_rd_addr(rf_wr_addr[0]),
-        .wb_data(rf_wr_data[0]),
-        .wb_mask(rf_wr_mask[0]),
-        .wb_en(rf_wr_en[0]),
+        .wb_rd_addr(wb_rd_addr),
+        .wb_data(wb_data),
+        .wb_mask(wb_mask),
+        .wb_en(wb_en),
         .branch_taken(wb_branch),
         .branch_target(wb_branch_target),
         .rf_wr_warp_id(rf_wr_wid),
@@ -242,24 +277,24 @@ module sm_core_top #(
         // LDS connections not used here
         .load_result(lsu_load_data),
         .load_valid(lsu_load_valid),
-        .resp_warp_id()
+        .resp_warp_id(lsu_resp_warp_id)
     );
     
     // Instantiate LDS
     lds_unit u_lds (
         .clk(clk),
         .rst_n(rst_n),
-        .lds_addr({32{lds_addr}}),  // Simplified
-        .lds_wdata({32{lds_data}}),
-        .lds_wr_en({32{lds_wr_en}}),
-        .lds_valid({32{lds_valid}}),
-        .lds_ready(),
-        .lds_rdata(),
+        .lds_addr(lds_addr_lane),
+        .lds_wdata(lds_wdata_lane),
+        .lds_wr_en(lds_wr_en_lane),
+        .lds_valid(lds_valid_lane),
+        .lds_ready(lds_ready_lane),
+        .lds_rdata(lds_rdata_lane),
         .lds_rdata_valid(lds_rdata_valid),
         .atomic_op(3'd0),
         .atomic_en(1'b0),
-        .conflict_detected(),
-        .conflict_count()
+        .conflict_detected(lds_conflict_det),
+        .conflict_count(lds_conflict_cnt)
     );
     
     // Performance Counter
@@ -277,3 +312,4 @@ module sm_core_top #(
     assign task_done = ~|warp_status;
 
 endmodule
+
